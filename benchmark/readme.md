@@ -31,3 +31,17 @@ example command to run the benchmark:
 ```
 ssh haor2@gh130 'unset LD_LIBRARY_PATH; module load cuda/12.4; source /u/haor2/workloads/myvenv/bin/activate; export PYTHONPATH=/u/haor2/workloads:/projects/beqg/approxMLIR/iree/third_party/approxMLIR/runtime:"'$PYTHONPATH; export APPROX_OPT_ML=/u/haor2/iree-build/tools/iree-opt; export APPROX_OPT_CPP=/work/nvme/beqg/PolygeistSample/build/bin/polygeist-opt; cd /u/haor2/workloads; python benchmark/llm_tool_benchmark.py --skip-tuning --use-subset
 ```
+
+## benchmarks
+
+LLM_tool [done]: `llm_tool_benchmark.py` provides a workflow that selects tools and use its output to answer questions
+
+LLM_bm25 [undone]: `llm_bm25_benchmark.py` should provide a workflow that is the bm25 portion of the tool benchmark. Its input should be from `questions_nq_generated.py` (randomly select 20 questions from the questions in evalutation_questions)
+
+LLM_kb [undone]: `llm_kb_benchmark.py` should provide a workflow that is the kb portion of the tool benchmark. Its input should be from `questions_nq_generated.py` (randomly select 20 questions from the questions in evalutation_questions)
+
+
+goal: 
+
+finish LLM_bm25 and LLM_kb cleanly by factoring out the common code shared with LLM_tool.
+

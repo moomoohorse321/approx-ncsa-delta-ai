@@ -40,7 +40,7 @@ import torch
 from gemma.gm.iree import _iree as gemma_iree
 
 # LLM + selector logic mirrors selector_tune_llm.py.
-from llm_kv import LLMManager
+from llm import LLMManager
 
 # Import LLM tool questions and grading.
 LLM_TOOL_DIR = Path(__file__).resolve().parents[1] / "LLM_tool"
@@ -276,7 +276,8 @@ def _build_tools(
         ToolSpec(
             name="kmeans",
             description=(
-                "Find K centroids of N nodes and related metadata (tool already knows input/output of questions). command=kmeans(-k,<number of clusters>,-n,<number of nodes>)"
+                "Find K centroids of N nodes and related metadata (tool already knows input/output of questions). "
+                "Example command=kmeans(-k,10,-n,100), meaning finding 10 centroids for 100 nodes."
             ),
             cpp_path=RUNTIME_BENCH_DIR / "src" / "approx_kmeans.c",
             command_parsing_fn=normalize_flag_equals_args,
@@ -284,7 +285,8 @@ def _build_tools(
         ToolSpec(
             name="lavaMD",
             description=(
-                "Molecular dynamics simulation and related metadata (tool already knows input/output of questions). command=lavaMD(-boxes1d,<boxes1d>)"
+                "Molecular dynamics simulation and related metadata (tool already knows input/output of questions). "
+                "Example command=lavaMD(-boxes1d,10), meaning running a molecular dynamics simulation for a system with boxes1d = 10."
             ),
             cpp_path=RUNTIME_BENCH_DIR / "src" / "approx_lavaMD.c",
             command_parsing_fn=normalize_flag_equals_args,
@@ -292,7 +294,8 @@ def _build_tools(
         ToolSpec(
             name="bm25",
             description=(
-                "search engine for wikipedia pages, tool for answering simple questions. command=bm25()"
+                "search engine for wikipedia pages, tool for answering simple questions. "
+                "Example command=bm25(), meaning searching wikipedia for relevant pages to answer a simple question."
             ),
             cpp_path=RUNTIME_BENCH_DIR / "src" / "approx_bm25.c",
             command_parsing_fn=strip_quotes_from_args,
@@ -300,7 +303,8 @@ def _build_tools(
         ToolSpec(
             name="kb",
             description=(
-                "Knowledge base of wikipedia pages, tool for answering hard questions. command=kb()"
+                "Knowledge base of wikipedia pages, tool for answering hard questions. "
+                "Example command=kb(), meaning searching wikipedia for relevant pages to answer a hard question."
             ),
             cpp_path=RUNTIME_BENCH_DIR / "src" / "approx_kb.c",
             command_parsing_fn=strip_quotes_from_args,
@@ -437,19 +441,46 @@ def _tool_prompt(tools: List[ToolSpec], question: str) -> str:
 You have access to the following tools:
 {tool_descriptions}
 
-Decide whether a tool is necessary to answer the question.
-Return EXACTLY two lines and nothing else.
-Do not include analysis, explanation, reasoning, or extra words.
-Line 1 must be: command = <tool invocation or none>
-Line 2 must be: necessity = <integer from 0 to 5>
+Return EXACTLY two lines and nothing else. Do not include analysis, explanation, reasoning, or extra words.
+Line 1 must be a command or none: command=...
+Line 2 must be a necessity score (0 to 5) showing how necessary the tool is: necessity=...
 
 If no tool is needed, use:
-command = none
-necessity = 0
+command=none
+necessity=0
+
+Here are some examples:
+Question: What are the 10 most important nodes in a graph with 1000 nodes? You must answer as exactly one tuple in the form (x,y). You must floor each coordinate to an integer, for example (12,34) instead of (12.91,34.78).
+Return:
+command=kmeans(-k,10,-n,1000)
+necessity=5
+
+Question: What is the capital of France? You must answer with a short phrase only.
+Return:
+command=bm25()
+necessity=5
+
+Question: Who wrote the novel '1984'? You must answer with a short name or phrase only.
+Return:
+command=kb()
+necessity=5
+
+Question: What is the average energy of a system with boxes1d = 10 after running a molecular dynamics simulation? You must answer with a number only.
+Return:
+command=lavaMD(-boxes1d,10)
+necessity=5
+
+Question: what is 1 + 1? You must answer with a number only.
+Return:
+command=none
+necessity=0
+
+Question: When was Disney's The Fox and the Hound first released? You must answer with a year only.
+Return:
+command=bm25()
+necessity=5
 
 Question: {question}
-
-You must strictly follow the tool's command sample and not change the format.
 """
 
 
@@ -481,7 +512,7 @@ def _run_question(
 
     # Tool selection prompt
     tool_prompt = _tool_prompt(tools, question.text)
-    print(tool_prompt)
+    # print(tool_prompt)
     _LOG.info("question.start text=%s", question.text)
     prompt_len = len(_tokenizer.encode(tool_prompt, add_bos=False))
     model_idx = select_variant(selector_modules, prompt_len)
@@ -527,6 +558,12 @@ def _run_question(
 def main() -> None:
     parser = argparse.ArgumentParser(description="LLM tool benchmark with approx-runtime tuning")
     parser.add_argument("--backend", type=str, default=os.environ.get("APPROX_BACKEND", "cuda"))
+    parser.add_argument(
+        "--llm-backend",
+        type=str,
+        default=os.environ.get("LLM_BACKEND", "iree"),
+        help="LLM sampler backend: iree or xla",
+    )
     parser.add_argument("--tuning-time", type=int, default=300)
     parser.add_argument("--accuracy", type=float, default=0.9)
     parser.add_argument("--skip-tuning", action="store_true")
@@ -577,7 +614,11 @@ def main() -> None:
     if len(variant_names) < 2:
         raise ValueError("Provide at least two variants, e.g. --variants 1b,4b")
 
-    llm = LLMManager(variant_names)
+    llm = LLMManager(
+        variant_names,
+        cache_length=args.context_len,
+        backend=args.llm_backend,
+    )
     questions = questions_to_run if args.use_subset else evalutation_questions
 
     extra_args = ["--iree-cuda-target=sm_80", "--iree-cuda-target-features=+ptx76"]

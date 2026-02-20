@@ -82,4 +82,3 @@ def _build_questions() -> list[Question]:
 
 
 evalutation_questions = _build_questions()
-questions_to_run = evalutation_questions

@@ -1,6 +1,6 @@
 import os
 import re
-from typing import Callable, List, Optional, Tuple, Set
+from typing import Callable, Dict, List, Optional, Tuple, Set
 import csv
 import time
 import warnings
@@ -15,8 +15,6 @@ os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # Suppress TF/XLA warnings
 warnings.filterwarnings('ignore', message='.*SoL config.*')
 
-
-import jax
 from gemma import gm
 from jax import numpy as jnp
 from gemma import peft
@@ -26,7 +24,7 @@ class LLMManager:
     def __init__(
         self,
         model_sizes: List[str] = ["1b", "4b", "12b"],
-        cache_length: int = 4096,
+        cache_length: int | Dict[str, int] = 4096,
         backend: str = "iree",
     ):
         self.models = []
@@ -34,15 +32,21 @@ class LLMManager:
         self.samplers = []
         self.model_map = {size: i for i, size in enumerate(model_sizes)}
         self.tokenizer = gm.text.Gemma3Tokenizer()
-        self.cache_length = int(cache_length)
+        if isinstance(cache_length, dict):
+            self.cache_lengths = {size: int(cache_length.get(size, 4096)) for size in model_sizes}
+        else:
+            self.cache_lengths = {size: int(cache_length) for size in model_sizes}
+        # Compatibility: keep a single cache_length attribute for callers that still read it.
+        self.cache_length = max(self.cache_lengths.values())
         backend_norm = backend.lower().strip()
         if backend_norm == "jax":
             backend_norm = "xla"
         if backend_norm not in {"iree", "xla"}:
             raise ValueError(f"Unsupported backend: {backend}. Use 'iree' or 'xla'.")
         self.backend = backend_norm
-        if self.cache_length <= 0:
-            raise ValueError(f"cache_length must be > 0, got {cache_length}")
+        for size, length in self.cache_lengths.items():
+            if length <= 0:
+                raise ValueError(f"cache_length for {size} must be > 0, got {length}")
         print(self.model_map)
         self._load_models(model_sizes)
 
@@ -71,20 +75,20 @@ class LLMManager:
                 
             else: raise ValueError(f"Unsupported model size: {size}")
             if params is None:
-                raise ValueError("Params must be loaded for IREE runner.")
+                raise ValueError("Params must be loaded for Gemma sampler.")
             self.models.append(model)
             self.params.append(params)
-            print('!' * 40)
+            model_cache_length = self.cache_lengths[size]
             sampler_cls = gm.iree.text.ChatSampler if self.backend == "iree" else gm.text.ChatSampler
             sampler = sampler_cls(
                 model=model,
                 params=params,
-                cache_length=self.cache_length,
+                cache_length=model_cache_length,
                 multi_turn=False,
             )
             # Keep prefill attention_mask width consistent with compiled MLIR.
             if hasattr(sampler, "sampler") and hasattr(sampler.sampler, "pad_length"):
-                object.__setattr__(sampler.sampler, "pad_length", (self.cache_length,))
+                object.__setattr__(sampler.sampler, "pad_length", (model_cache_length,))
             self.samplers.append(sampler)
         print("All models loaded successfully.")
   

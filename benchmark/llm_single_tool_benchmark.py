@@ -10,7 +10,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 import approx_runtime as ar
 import jax
@@ -28,7 +28,7 @@ _DEFAULT_CGEIST_INCLUDE_DIR = "/work/nvme/beqg/PolygeistSample/tools/cgeist/Test
 
 _ACCURACY_FLOOR_THRESHOLD = 0.2
 _MODEL_CONTEXT_LENGTHS = {
-    "1b": 4096,
+    "1b": 1024,
     "4b": 16384,
 }
 _SIMILARITY_TOOL_OUTPUT_MAX_TOKENS = 4096
@@ -45,7 +45,7 @@ RUNTIME_BENCH_DIR = Path(
 )
 if str(RUNTIME_BENCH_DIR) not in sys.path:
     sys.path.insert(0, str(RUNTIME_BENCH_DIR))
-from benchmark_common import default_toolchain
+from benchmark_common import default_toolchain, exact_decision_config
 
 
 def reset_gemma_stats() -> None:
@@ -169,12 +169,61 @@ def get_state(similarity_score_x10: jax.Array) -> jax.Array:
     return similarity_score_x10
 
 
+def _build_static_knob_plan(param_names: set[str]) -> Tuple[Dict[str, int], set[str], set[str]]:
+    fixed_config: Dict[str, int] = {}
+    decision_alias_bases: set[str] = set()
+    threshold_bases: set[str] = set()
+
+    for name in param_names:
+        if name.endswith("_decision_1"):
+            base = name[: -len("_decision_1")]
+            fixed_config[name] = 0
+            decision_alias_bases.add(base)
+        elif name.endswith("_threshold_0"):
+            base = name[: -len("_threshold_0")]
+            fixed_config[name] = 0
+            threshold_bases.add(base)
+
+    return fixed_config, decision_alias_bases, threshold_bases
+
+
+def _expand_static_config(config: Dict[str, int], decision_alias_bases: set[str], threshold_bases: set[str]) -> Dict[str, int]:
+    expanded = dict(config)
+    for base in decision_alias_bases:
+        d0 = f"{base}_decision_0"
+        d1 = f"{base}_decision_1"
+        if d0 in expanded:
+            expanded[d1] = expanded[d0]
+    for base in threshold_bases:
+        expanded[f"{base}_threshold_0"] = 0
+    return expanded
+
+
+def _load_replay_configs(csv_path: Path, allowed_keys: set[str]) -> List[Dict[str, int]]:
+    configs: List[Dict[str, int]] = []
+    with csv_path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            cfg: Dict[str, int] = {}
+            for key, raw in row.items():
+                if key not in allowed_keys:
+                    continue
+                if raw is None or raw == "":
+                    continue
+                try:
+                    cfg[key] = int(float(raw))
+                except ValueError:
+                    continue
+            configs.append(cfg)
+    return configs
+
+
 @ar.Knob(
     decision_tree=ar.DecisionTree(
         state_function=get_state,
         state_indices=[0],
         thresholds=[5],
-        decisions=[1, 1],
+        decisions=[0, 0],
         transform_type="task_skipping",
         thresholds_lower=[0],
         thresholds_upper=[10],
@@ -323,6 +372,17 @@ def run_single_tool_benchmark(
     parser.add_argument("--log-file", type=str, default=None)
     parser.add_argument("--config-log", type=str, default="")
     parser.add_argument("--database", type=str, default="opentuner.db")
+    parser.add_argument("--static", action="store_true", help="Collapse all branch knobs into static knobs.")
+    parser.add_argument("--exact", action="store_true", help="Run explicit exact baseline mode with tuning question slice.")
+    parser.add_argument("--replay-config-csv", type=str, default="", help="Replay configs from this CSV instead of tuning.")
+    parser.add_argument("--replay-output-csv", type=str, default="", help="Output CSV path for replay results.")
+    parser.add_argument(
+        "--replay-split",
+        type=str,
+        default="",
+        choices=["", "eval", "tune"],
+        help="Question split to use during replay (eval or tune).",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -333,6 +393,9 @@ def run_single_tool_benchmark(
     )
     _LOG.setLevel(getattr(logging, args.log_level.upper(), logging.INFO))
     _LOG.propagate = True
+
+    if args.replay_config_csv:
+        args.skip_tuning = True
 
     necessity_score = max(0, min(5, int(args.necessity_score)))
     dataset_root = Path(__file__).resolve().parent
@@ -372,6 +435,22 @@ def run_single_tool_benchmark(
     selector_manager = ar.MLIRConfigManager()
     selector_params = selector_manager.parse_annotations(selector_mlir)
     selector_cache: Dict[Tuple[Tuple[str, int], ...], Tuple[object, Path]] = {}
+    combined_mlir = selector_mlir + "\n\n" + runtime.annotated_mlir
+    tune_mlir = combined_mlir
+    decision_alias_bases: set[str] = set()
+    threshold_bases: set[str] = set()
+    if args.static:
+        all_param_names = set(runtime.params.keys()) | set(selector_params.keys())
+        static_fixed_config, decision_alias_bases, threshold_bases = _build_static_knob_plan(all_param_names)
+        if static_fixed_config:
+            combined_manager = ar.MLIRConfigManager()
+            tune_mlir = combined_manager.apply_config(combined_mlir, static_fixed_config)
+        _LOG.info(
+            "static mode enabled: fixed_params=%d alias_groups=%d threshold_groups=%d",
+            len(static_fixed_config),
+            len(decision_alias_bases),
+            len(threshold_bases),
+        )
 
     extra_args = ["--iree-cuda-target=sm_80", "--iree-cuda-target-features=+ptx76"]
     if args.backend != "cuda":
@@ -395,12 +474,13 @@ def run_single_tool_benchmark(
             writer.writerow(row)
 
     def evaluate_fn(config: Dict[str, int]) -> Tuple[float, float]:
-        _LOG.info("config.start size=%d", len(config))
-        selector_key = tuple(sorted((k, v) for k, v in config.items() if k in selector_params))
+        effective_config = _expand_static_config(config, decision_alias_bases, threshold_bases) if args.static else config
+        _LOG.info("config.start size=%d effective_size=%d", len(config), len(effective_config))
+        selector_key = tuple(sorted((k, v) for k, v in effective_config.items() if k in selector_params))
         if selector_key in selector_cache:
             selector_modules, vmfb_path = selector_cache[selector_key]
         else:
-            modified_selector = selector_manager.apply_config(selector_mlir, config)
+            modified_selector = selector_manager.apply_config(selector_mlir, effective_config)
             selector_modules, vmfb_path = compile_selector(
                 modified_selector,
                 selector_pipeline,
@@ -421,7 +501,7 @@ def run_single_tool_benchmark(
                 selector_modules,
                 tool,
                 runtime,
-                config,
+                effective_config,
                 dataset_root,
                 cgeist_config,
                 toolchain,
@@ -441,24 +521,53 @@ def run_single_tool_benchmark(
         return avg_time_ms, avg_acc
 
     def result_callback(config: Dict[str, int], time_ms: float, accuracy: float) -> None:
-        _log_config_result(config, time_ms, accuracy)
+        effective_config = _expand_static_config(config, decision_alias_bases, threshold_bases) if args.static else config
+        _log_config_result(effective_config, time_ms, accuracy)
+
+    if args.replay_config_csv:
+        replay_csv_path = Path(args.replay_config_csv)
+        replay_output_path = Path(args.replay_output_csv) if args.replay_output_csv else Path(args.out_dir) / "replay_results.csv"
+        replay_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        allowed_keys = set(runtime.params.keys()) | set(selector_params.keys())
+        replay_configs = _load_replay_configs(replay_csv_path, allowed_keys)
+        if not replay_configs:
+            raise RuntimeError(f"No replay configs loaded from {replay_csv_path}")
+
+        result_fieldnames = ["idx", "time_ms", "accuracy"] + sorted(allowed_keys)
+        with replay_output_path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=result_fieldnames)
+            writer.writeheader()
+            for idx, cfg in enumerate(replay_configs, start=1):
+                time_ms, acc = evaluate_fn(cfg)
+                effective_config = _expand_static_config(cfg, decision_alias_bases, threshold_bases) if args.static else cfg
+                row: Dict[str, Any] = {"idx": idx, "time_ms": f"{time_ms:.6f}", "accuracy": f"{acc:.6f}"}
+                row.update(effective_config)
+                writer.writerow(row)
+                _LOG.info("replay progress=%d/%d time_ms=%.3f acc=%.3f", idx, len(replay_configs), time_ms, acc)
+        print(f"Replay done. rows={len(replay_configs)} output={replay_output_path}")
+        return
 
     if args.skip_tuning:
-        time_ms, acc = evaluate_fn({})
-        result_callback({}, time_ms, acc)
+        all_params: Dict[str, ar.TunableParam] = {}
+        all_params.update(runtime.params)
+        all_params.update(selector_params)
+        baseline_config = exact_decision_config(all_params)
+        time_ms, acc = evaluate_fn(baseline_config)
+        result_callback(baseline_config, time_ms, acc)
         print(f"Baseline ({tool_name}): time={time_ms:.2f}ms, acc={acc:.4f}")
         return
 
-    combined_mlir = selector_mlir + "\n\n" + runtime.annotated_mlir
     result = ar.tune(
-        mlir_source=combined_mlir,
+        mlir_source=tune_mlir,
         evaluate_fn=evaluate_fn,
         accuracy_threshold=args.accuracy,
         time_budget=args.tuning_time,
         database=args.database,
         result_callback=result_callback,
     )
+    best_config = _expand_static_config(result["best_config"], decision_alias_bases, threshold_bases) if args.static else result["best_config"]
     print("Tuning done.")
     print(f"Best time: {result['best_time']:.2f}ms")
     print(f"Best accuracy: {result['best_accuracy']:.4f}")
-    print(f"Best config: {result['best_config']}")
+    print(f"Best config: {best_config}")

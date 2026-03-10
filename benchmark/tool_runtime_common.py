@@ -57,6 +57,7 @@ class ToolRuntime:
 
 
 _embedding_model = SentenceTransformer("sentence-transformers/all-mpnet-base-v1")
+_KB_LOG_MAX_WORDS = 16 * 1024
 
 
 def strip_quotes_from_args(args: List[str], _: "ToolRuntime") -> List[str]:
@@ -255,6 +256,14 @@ def _parse_tool_time_ms(tool_name: str, stdout: str) -> float:
     return float(match.group(1))
 
 
+def _truncate_for_log(text: str, max_words: int = _KB_LOG_MAX_WORDS) -> str:
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    kept = " ".join(words[:max_words])
+    return f"{kept}\n... [truncated {len(words) - max_words} words]"
+
+
 def invoke_tool(
     tool: ToolSpec,
     runtime: ToolRuntime,
@@ -304,6 +313,10 @@ def invoke_tool(
     if tool.name == "bm25":
         raw_output = rerank(raw_output, question)
     elif tool.name == "kb":
+        rank_lines = "\n".join(
+            line for line in result.stdout.splitlines() if line.strip().startswith("Rank ")
+        )
+        log.info("kb.rank_lines question=%s\n%s", question, _truncate_for_log(rank_lines))
         raw_output = _kb_post_process(raw_output, dataset_root, question)
 
     log.info(

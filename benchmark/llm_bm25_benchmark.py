@@ -251,10 +251,23 @@ _BM25_EVAL_QUESTIONS_IN_LOG_ORDER = ['india is a fedration of how many states',
  'when did oscar de la hoya fight chavez']
 
 if __name__ == "__main__":
-    is_eval_mode = "--skip-tuning" in sys.argv
-    selected_questions = (
-        _BM25_EVAL_QUESTIONS_IN_LOG_ORDER[:200] if is_eval_mode else _BM25_EVAL_QUESTIONS_IN_LOG_ORDER[200:]
-    )
+    replay_split = None
+    for i, arg in enumerate(sys.argv):
+        if arg.startswith("--replay-split="):
+            replay_split = arg.split("=", 1)[1].strip().lower()
+            break
+        if arg == "--replay-split" and i + 1 < len(sys.argv):
+            replay_split = sys.argv[i + 1].strip().lower()
+            break
+
+    is_skip_tuning = "--skip-tuning" in sys.argv
+    is_static = "--static" in sys.argv
+    is_exact = "--exact" in sys.argv
+    if replay_split in {"eval", "tune"}:
+        use_eval_slice = replay_split == "eval"
+    else:
+        use_eval_slice = is_skip_tuning and not is_static and not is_exact
+    selected_questions = _BM25_EVAL_QUESTIONS_IN_LOG_ORDER[:200] if use_eval_slice else _BM25_EVAL_QUESTIONS_IN_LOG_ORDER[200:]
     run_single_tool_benchmark(
         "bm25",
         tuning_questions_in_order=selected_questions,

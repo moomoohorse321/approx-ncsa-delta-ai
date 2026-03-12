@@ -28,7 +28,7 @@ _DEFAULT_CGEIST_INCLUDE_DIR = "/work/nvme/beqg/PolygeistSample/tools/cgeist/Test
 
 _ACCURACY_FLOOR_THRESHOLD = 0.2
 _MODEL_CONTEXT_LENGTHS = {
-    "1b": 1024,
+    "1b": 512,
     "4b": 16384,
 }
 _SIMILARITY_TOOL_OUTPUT_MAX_TOKENS = 4096
@@ -46,6 +46,10 @@ RUNTIME_BENCH_DIR = Path(
 if str(RUNTIME_BENCH_DIR) not in sys.path:
     sys.path.insert(0, str(RUNTIME_BENCH_DIR))
 from benchmark_common import default_toolchain, exact_decision_config
+
+
+class EvalLimitReached(RuntimeError):
+    pass
 
 
 def reset_gemma_stats() -> None:
@@ -376,6 +380,7 @@ def run_single_tool_benchmark(
     parser.add_argument("--exact", action="store_true", help="Run explicit exact baseline mode with tuning question slice.")
     parser.add_argument("--replay-config-csv", type=str, default="", help="Replay configs from this CSV instead of tuning.")
     parser.add_argument("--replay-output-csv", type=str, default="", help="Output CSV path for replay results.")
+    parser.add_argument("--max-evals", type=int, default=300, help="Max number of evaluate_fn calls per run; <=0 disables cap.")
     parser.add_argument(
         "--replay-split",
         type=str,
@@ -473,8 +478,31 @@ def run_single_tool_benchmark(
             row.update(cfg)
             writer.writerow(row)
 
+    config_eval_cache: Dict[Tuple[Tuple[str, int], ...], Dict[str, float]] = {}
+    eval_calls = 0
+
     def evaluate_fn(config: Dict[str, int]) -> Tuple[float, float]:
+        nonlocal eval_calls
+        eval_calls += 1
+        if args.max_evals > 0 and eval_calls > args.max_evals:
+            raise EvalLimitReached(f"Reached max evaluations ({args.max_evals})")
+
         effective_config = _expand_static_config(config, decision_alias_bases, threshold_bases) if args.static else config
+        cache_key = tuple(sorted(effective_config.items()))
+        cached = config_eval_cache.get(cache_key)
+        if cached and int(cached["eval_count"]) >= 2:
+            avg_time_ms = cached["sum_time_ms"] / cached["eval_count"]
+            avg_acc = cached["sum_acc"] / cached["eval_count"]
+            cached["reuse_count"] += 1
+            _LOG.info(
+                "config.cache_hit eval_count=%d reuse_count=%d time_ms=%.3f acc=%.3f",
+                int(cached["eval_count"]),
+                int(cached["reuse_count"]),
+                avg_time_ms,
+                avg_acc,
+            )
+            return avg_time_ms, avg_acc
+
         _LOG.info("config.start size=%d effective_size=%d", len(config), len(effective_config))
         selector_key = tuple(sorted((k, v) for k, v in effective_config.items() if k in selector_params))
         if selector_key in selector_cache:
@@ -518,13 +546,38 @@ def run_single_tool_benchmark(
         avg_acc = total_acc / len(questions)
         avg_time_ms = total_time_ms / len(questions)
         _LOG.info("config.done time_ms=%.3f acc=%.3f", avg_time_ms, avg_acc)
+
+        if cached is None:
+            config_eval_cache[cache_key] = {
+                "eval_count": 1.0,
+                "sum_time_ms": avg_time_ms,
+                "sum_acc": avg_acc,
+                "reuse_count": 0.0,
+            }
+        else:
+            cached["eval_count"] += 1.0
+            cached["sum_time_ms"] += avg_time_ms
+            cached["sum_acc"] += avg_acc
+
         return avg_time_ms, avg_acc
 
     def result_callback(config: Dict[str, int], time_ms: float, accuracy: float) -> None:
         effective_config = _expand_static_config(config, decision_alias_bases, threshold_bases) if args.static else config
         _log_config_result(effective_config, time_ms, accuracy)
 
+    all_params: Dict[str, ar.TunableParam] = {}
+    all_params.update(runtime.params)
+    all_params.update(selector_params)
+    exact_warmup_config = exact_decision_config(all_params)
+
+    def run_exact_warmup_once(reason: str) -> None:
+        _LOG.info("warmup.start reason=%s", reason)
+        warmup_time_ms, warmup_acc = evaluate_fn(exact_warmup_config)
+        _LOG.info("warmup.done reason=%s time_ms=%.3f acc=%.3f", reason, warmup_time_ms, warmup_acc)
+
     if args.replay_config_csv:
+        run_exact_warmup_once("replay")
+
         replay_csv_path = Path(args.replay_config_csv)
         replay_output_path = Path(args.replay_output_csv) if args.replay_output_csv else Path(args.out_dir) / "replay_results.csv"
         replay_output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -535,37 +588,47 @@ def run_single_tool_benchmark(
             raise RuntimeError(f"No replay configs loaded from {replay_csv_path}")
 
         result_fieldnames = ["idx", "time_ms", "accuracy"] + sorted(allowed_keys)
+        rows_written = 0
         with replay_output_path.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=result_fieldnames)
             writer.writeheader()
             for idx, cfg in enumerate(replay_configs, start=1):
-                time_ms, acc = evaluate_fn(cfg)
+                try:
+                    time_ms, acc = evaluate_fn(cfg)
+                except EvalLimitReached as e:
+                    _LOG.warning("replay.stopped_early reason=%s", e)
+                    break
                 effective_config = _expand_static_config(cfg, decision_alias_bases, threshold_bases) if args.static else cfg
                 row: Dict[str, Any] = {"idx": idx, "time_ms": f"{time_ms:.6f}", "accuracy": f"{acc:.6f}"}
                 row.update(effective_config)
                 writer.writerow(row)
+                rows_written += 1
                 _LOG.info("replay progress=%d/%d time_ms=%.3f acc=%.3f", idx, len(replay_configs), time_ms, acc)
-        print(f"Replay done. rows={len(replay_configs)} output={replay_output_path}")
+        print(f"Replay done. rows={rows_written} output={replay_output_path}")
         return
 
     if args.skip_tuning:
-        all_params: Dict[str, ar.TunableParam] = {}
-        all_params.update(runtime.params)
-        all_params.update(selector_params)
         baseline_config = exact_decision_config(all_params)
         time_ms, acc = evaluate_fn(baseline_config)
         result_callback(baseline_config, time_ms, acc)
         print(f"Baseline ({tool_name}): time={time_ms:.2f}ms, acc={acc:.4f}")
         return
 
-    result = ar.tune(
-        mlir_source=tune_mlir,
-        evaluate_fn=evaluate_fn,
-        accuracy_threshold=args.accuracy,
-        time_budget=args.tuning_time,
-        database=args.database,
-        result_callback=result_callback,
-    )
+    run_exact_warmup_once("tuning")
+
+    try:
+        result = ar.tune(
+            mlir_source=tune_mlir,
+            evaluate_fn=evaluate_fn,
+            accuracy_threshold=args.accuracy,
+            time_budget=args.tuning_time,
+            database=args.database,
+            result_callback=result_callback,
+        )
+    except EvalLimitReached as e:
+        _LOG.warning("tuning.stopped_early reason=%s", e)
+        print(f"Tuning stopped early: {e}")
+        return
     best_config = _expand_static_config(result["best_config"], decision_alias_bases, threshold_bases) if args.static else result["best_config"]
     print("Tuning done.")
     print(f"Best time: {result['best_time']:.2f}ms")

@@ -232,9 +232,21 @@ def _kb_post_process(data_string: str, dataset_root: Path, question: str) -> str
         doc_id_str, stored_content = line.split("|", 1)
         doc_id_to_content[doc_id_str] = stored_content.strip()
 
+    top_k = int(os.environ.get("KB_POST_TOPK", "5"))
+    top_entries = [(rank, doc_id, score) for rank, doc_id, score in parsed_data if rank <= top_k]
+    missing_doc_ids = [doc_id for _, doc_id, _ in top_entries if doc_id not in doc_id_to_content]
+    _LOG.info(
+        "kb.post_process_topk question=%s top_k=%d parsed_total=%d top_entries=%s missing_doc_ids=%s",
+        question,
+        top_k,
+        len(parsed_data),
+        top_entries,
+        missing_doc_ids,
+    )
+
     final_content_string = ""
     for rank, doc_id, _ in parsed_data:
-        if rank > 5:
+        if rank > top_k:
             continue
         stored_content = doc_id_to_content.get(doc_id, "Content not found for this doc_id")
         content = stored_content.replace("\\n", "\n")
@@ -313,10 +325,6 @@ def invoke_tool(
     if tool.name == "bm25":
         raw_output = rerank(raw_output, question)
     elif tool.name == "kb":
-        rank_lines = "\n".join(
-            line for line in result.stdout.splitlines() if line.strip().startswith("Rank ")
-        )
-        log.info("kb.rank_lines question=%s\n%s", question, _truncate_for_log(rank_lines))
         raw_output = _kb_post_process(raw_output, dataset_root, question)
 
     log.info(

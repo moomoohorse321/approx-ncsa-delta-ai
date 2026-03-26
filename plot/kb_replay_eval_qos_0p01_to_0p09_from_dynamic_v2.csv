@@ -1,0 +1,10 @@
+compute_similarities_with_state_decision_0,compute_similarities_with_state_decision_1,compute_similarities_with_state_threshold_0,parse_embedding_decision_0,parse_embedding_decision_1,parse_embedding_threshold_0,selector_kernel_decision_0,selector_kernel_decision_1,selector_kernel_threshold_0,target_qos_loss,picked_time_ms,picked_qos_loss,picked_rank_within_threshold
+0,2,5,2,0,10,1,0,2,0.01,4674.78958,0.0,1
+1,2,4,2,2,10,1,0,3,0.02,4626.423045,0.018135,1
+0,2,5,2,0,10,1,0,3,0.03,4644.513899,0.018135,2
+0,2,4,2,2,9,1,0,3,0.04,4660.86438,0.018135,3
+0,2,4,2,2,10,1,0,3,0.05,4663.155172,0.018135,4
+0,2,5,2,2,1,1,0,3,0.06,4664.978127,0.018135,5
+0,2,4,2,2,10,1,0,4,0.07,4085.734957,0.068135,1
+0,2,4,2,2,9,1,0,4,0.08,4104.140785,0.068135,2
+0,2,4,2,1,10,1,0,4,0.09,4105.114595,0.068135,3

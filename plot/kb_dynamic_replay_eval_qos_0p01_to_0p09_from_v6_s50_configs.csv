@@ -1,0 +1,10 @@
+qos_target,selected_qos_loss,time_ms,accuracy,compute_similarities_with_state_decision_0,compute_similarities_with_state_decision_1,compute_similarities_with_state_threshold_0,parse_embedding_decision_0,parse_embedding_decision_1,parse_embedding_threshold_0,selector_kernel_decision_0,selector_kernel_decision_1,selector_kernel_threshold_0
+0.01,0.000000,5293.094190,0.456651,0,0,5,1,1,10,0,0,1
+0.02,0.020000,4746.254511,0.436651,0,0,0,2,2,0,0,0,0
+0.03,0.000000,5297.957228,0.456651,0,0,5,1,2,9,0,0,8
+0.04,0.030334,4375.402516,0.426317,2,0,4,2,0,9,0,0,0
+0.05,0.038905,4433.167988,0.417746,2,1,5,1,1,10,0,0,1
+0.06,0.035572,4518.061547,0.421079,2,0,5,1,1,10,0,0,1
+0.07,0.065794,4384.959392,0.390857,2,0,5,1,1,8,0,1,7
+0.08,0.072794,3959.985998,0.383857,2,2,0,2,2,0,0,0,0
+0.09,0.072794,3972.269640,0.383857,2,2,5,2,2,7,0,0,0

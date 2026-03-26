@@ -534,7 +534,7 @@ def run_single_tool_benchmark(
                 cgeist_config,
                 toolchain,
                 args.context_len,
-                necessity_score,
+                random.randint(0, 5),
                 model_context_lengths,
                 sim_score_min,
                 sim_score_max,
@@ -576,8 +576,6 @@ def run_single_tool_benchmark(
         _LOG.info("warmup.done reason=%s time_ms=%.3f acc=%.3f", reason, warmup_time_ms, warmup_acc)
 
     if args.replay_config_csv:
-        run_exact_warmup_once("replay")
-
         replay_csv_path = Path(args.replay_config_csv)
         replay_output_path = Path(args.replay_output_csv) if args.replay_output_csv else Path(args.out_dir) / "replay_results.csv"
         replay_output_path.parent.mkdir(parents=True, exist_ok=True)

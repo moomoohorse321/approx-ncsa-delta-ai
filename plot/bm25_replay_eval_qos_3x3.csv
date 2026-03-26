@@ -1,0 +1,6 @@
+count_and_lower_words_decision_0,count_and_lower_words_decision_1,count_and_lower_words_threshold_0,lowering_corpus_decision_0,lowering_corpus_decision_1,lowering_corpus_threshold_0,score_term_over_docs_decision_0,score_term_over_docs_decision_1,score_term_over_docs_threshold_0,selector_kernel_decision_0,selector_kernel_decision_1,selector_kernel_threshold_0,bucket_qos_leq,source_time_ms,source_qos_loss
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+1,1,2,2,3,5,2,0,36,0,1,9,0.06,14798.031812,0.035853
+1,1,2,2,3,5,2,0,28,0,1,8,0.09,14552.367738,0.087197
+1,1,2,3,3,5,2,0,27,0,1,8,0.09,14628.072109,0.087197
+1,1,1,2,3,4,2,0,27,0,1,8,0.09,14711.788964,0.087197

@@ -7,6 +7,9 @@ from .llm_single_tool_benchmark import run_single_tool_benchmark
 _BM25_TUNING_QUESTIONS_IN_ORDER = []
 _BM25_SIM_SCORE_MIN = 0.5
 _BM25_SIM_SCORE_MAX = 1
+_EVAL_SET_SIZE = 250
+_TUNING_CHUNK_SIZE = 25
+_ALLOWED_TUNING_SET_SIZES = {25, 50, 75, 100}
 
 
 _BM25_EVAL_QUESTIONS_IN_LOG_ORDER = ["where's the chick-fil-a kickoff game being played",
@@ -611,6 +614,43 @@ _BM25_EVAL_QUESTIONS_IN_LOG_ORDER = ["where's the chick-fil-a kickoff game being
  "when was the let's move campaign launched",
  'who played dre in all eyez on me']
 
+
+_BM25_FIXED_EVAL_QUESTIONS_250 = _BM25_EVAL_QUESTIONS_IN_LOG_ORDER[:_EVAL_SET_SIZE]
+_BM25_TUNING_POOL_350 = _BM25_EVAL_QUESTIONS_IN_LOG_ORDER[_EVAL_SET_SIZE:]
+_BM25_TUNING_CHUNKS_25 = [
+    _BM25_TUNING_POOL_350[i:i + _TUNING_CHUNK_SIZE]
+    for i in range(0, len(_BM25_TUNING_POOL_350), _TUNING_CHUNK_SIZE)
+]
+_BM25_TUNING_QUESTIONS_BY_SIZE = {
+    size: _BM25_TUNING_POOL_350[:size]
+    for size in sorted(_ALLOWED_TUNING_SET_SIZES)
+}
+
+
+def _parse_tuning_set_size(default_size: int = 100) -> int:
+    for i, arg in enumerate(sys.argv):
+        if arg.startswith("--tuning-set-size="):
+            return int(arg.split("=", 1)[1].strip())
+        if arg == "--tuning-set-size" and i + 1 < len(sys.argv):
+            return int(sys.argv[i + 1].strip())
+    return default_size
+
+
+def _strip_cli_arg(argv: list[str], flag: str) -> list[str]:
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == flag:
+            i += 2
+            continue
+        if arg.startswith(flag + "="):
+            i += 1
+            continue
+        out.append(arg)
+        i += 1
+    return out
+
 if __name__ == "__main__":
     replay_split = None
     for i, arg in enumerate(sys.argv):
@@ -628,7 +668,17 @@ if __name__ == "__main__":
         use_eval_slice = replay_split == "eval"
     else:
         use_eval_slice = is_skip_tuning and not is_static and not is_exact
-    selected_questions = _BM25_EVAL_QUESTIONS_IN_LOG_ORDER[:500] if use_eval_slice else _BM25_EVAL_QUESTIONS_IN_LOG_ORDER[500:]
+    if use_eval_slice:
+        selected_questions = _BM25_FIXED_EVAL_QUESTIONS_250
+    else:
+        tuning_set_size = _parse_tuning_set_size()
+        if tuning_set_size not in _ALLOWED_TUNING_SET_SIZES:
+            raise RuntimeError(
+                f"Invalid --tuning-set-size={tuning_set_size}. "
+                f"Allowed: {sorted(_ALLOWED_TUNING_SET_SIZES)}"
+            )
+        selected_questions = _BM25_TUNING_QUESTIONS_BY_SIZE[tuning_set_size]
+    sys.argv = _strip_cli_arg(sys.argv, "--tuning-set-size")
     run_single_tool_benchmark(
         "bm25",
         tuning_questions_in_order=selected_questions,

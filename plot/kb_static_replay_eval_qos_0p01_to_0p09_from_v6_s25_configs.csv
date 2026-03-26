@@ -1,0 +1,4 @@
+qos_target,selected_qos_loss,time_ms,accuracy,compute_similarities_with_state_decision_0,compute_similarities_with_state_decision_1,compute_similarities_with_state_threshold_0,parse_embedding_decision_0,parse_embedding_decision_1,parse_embedding_threshold_0,selector_kernel_decision_0,selector_kernel_decision_1,selector_kernel_threshold_0
+0.00,0.000000,6863.907080,0.486667,0,0,0,0,0,0,0,0,0
+0.01,0.000000,5326.170002,0.486667,0,0,0,1,1,0,0,0,0
+0.05,0.040000,4779.007853,0.446667,0,0,0,2,2,0,0,0,0

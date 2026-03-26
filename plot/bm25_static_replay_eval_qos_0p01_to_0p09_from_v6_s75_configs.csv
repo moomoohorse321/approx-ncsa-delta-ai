@@ -1,0 +1,5 @@
+qos_target,selected_qos_loss,time_ms,accuracy,count_and_lower_words_decision_0,count_and_lower_words_decision_1,count_and_lower_words_threshold_0,lowering_corpus_decision_0,lowering_corpus_decision_1,lowering_corpus_threshold_0,score_term_over_docs_decision_0,score_term_over_docs_decision_1,score_term_over_docs_threshold_0,selector_kernel_decision_0,selector_kernel_decision_1,selector_kernel_threshold_0
+0.06,0.057460,16551.555830,0.354000,1,1,0,3,3,0,2,2,0,0,0,0
+0.07,0.051492,21427.955253,0.359968,1,1,0,2,2,0,2,2,0,0,0,0
+0.08,0.056158,22094.192002,0.355302,1,1,0,2,2,0,0,0,0,0,0,0
+0.09,0.062317,25108.457559,0.349143,1,1,0,1,1,0,2,2,0,0,0,0
